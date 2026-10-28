@@ -87,3 +87,11 @@ Explain schema.ts
 ```
 commit, push and continue to the next phase
 ```
+
+---
+
+## 9 — 2026-10-29 — Push, deploy, start Phase 3
+
+```
+push, deploy and continue to phase 3
+```
