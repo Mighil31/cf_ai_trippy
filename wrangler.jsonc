@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-ai-trippy",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Workers AI — Llama 3.3 70B (planning/chat) and Llama 3.1 8B (cheap tasks)
+  "ai": { "binding": "AI", "remote": true },
+
+  // React SPA; the Worker only runs first for agent and API routes
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*", "/api/*"]
+  },
+
+  // Free plan only supports SQLite-backed Durable Objects
+  "durable_objects": {
+    "bindings": [
+      { "name": "TripAgent", "class_name": "TripAgent" },
+      { "name": "UserDirectory", "class_name": "UserDirectory" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TripAgent", "UserDirectory"] }
+  ]
+
+  // Added in later phases: KV cache (Phase 3), Workflows (Phase 4)
+}

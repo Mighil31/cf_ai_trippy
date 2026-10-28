@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Cloudflare
+.wrangler/
+.dev.vars
+.env*
+!.dev.vars.example
+
+# Local planning notes (not published)
+docs/PLAN.md

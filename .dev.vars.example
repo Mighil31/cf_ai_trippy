@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local development. Secrets for production: `wrangler secret put <NAME>`.
+# Needed from Phase 3 onwards:
+# GEOAPIFY_KEY=
+# ORS_KEY=

@@ -1,0 +1,9 @@
+{
+  "extends": "agents/tsconfig",
+  "compilerOptions": {
+    // Runtime types come from `wrangler types` (env.d.ts)
+    "types": ["node", "vite/client"]
+  },
+  "exclude": ["test"],
+  "include": ["src", "env.d.ts", "vite.config.ts", "vitest.config.ts"]
+}
