@@ -10,6 +10,8 @@ import {
   type ItemPatch,
   type TripDetailsPatch
 } from "../shared/schema";
+import { ServiceError } from "../services/http";
+import { PlaceCategory, type FoundPlace } from "../services/places";
 import * as ops from "../shared/trip-ops";
 import type { OpContext, OpResult } from "../shared/trip-ops";
 import type { Trip } from "../shared/schema";
@@ -21,6 +23,11 @@ export type TripActions = {
     op: (trip: Trip, ctx: OpContext) => OpResult
   ): Promise<{ summary: string; version: number }>;
   undo(): Promise<{ summary: string; version: number }>;
+  findPlaces(
+    category: PlaceCategory,
+    area?: string,
+    cuisine?: string
+  ): Promise<{ near: string; places: FoundPlace[] }>;
 };
 
 export type ToolResult =
@@ -75,6 +82,18 @@ const ItemArgs = z.object({
   startTime: TimeOfDay.optional().describe("Local start time, HH:MM"),
   endTime: TimeOfDay.optional().describe("Local end time, HH:MM"),
   placeName: z.string().optional().describe("Venue or area name"),
+  placeLat: z.coerce
+    .number()
+    .min(-90)
+    .max(90)
+    .optional()
+    .describe("Latitude from search_places, if known"),
+  placeLon: z.coerce
+    .number()
+    .min(-180)
+    .max(180)
+    .optional()
+    .describe("Longitude from search_places, if known"),
   estimatedCost: z.coerce
     .number()
     .nonnegative()
@@ -89,7 +108,13 @@ function toItemFields(args: Partial<z.infer<typeof ItemArgs>>): ItemPatch {
   if (args.title !== undefined) fields.title = args.title;
   if (args.startTime !== undefined) fields.startTime = args.startTime;
   if (args.endTime !== undefined) fields.endTime = args.endTime;
-  if (args.placeName !== undefined) fields.place = { name: args.placeName };
+  if (args.placeName !== undefined) {
+    fields.place = { name: args.placeName };
+    if (args.placeLat !== undefined && args.placeLon !== undefined) {
+      fields.place.lat = args.placeLat;
+      fields.place.lon = args.placeLon;
+    }
+  }
   if (args.estimatedCost !== undefined) {
     fields.cost = { amount: args.estimatedCost, estimated: true };
   }
@@ -99,6 +124,58 @@ function toItemFields(args: Partial<z.infer<typeof ItemArgs>>): ItemPatch {
 
 export function createTripTools(actions: TripActions) {
   return {
+    search_places: tool({
+      description:
+        "Find real places from OpenStreetMap near the destination (or near another area, e.g. a day-trip town). Use before suggesting specific places, and copy name, lat and lon into add_item.",
+      inputSchema: z.object({
+        category: z.enum(PlaceCategory),
+        area: z
+          .string()
+          .optional()
+          .describe(
+            "Search near this town or district instead of the destination"
+          ),
+        cuisine: z
+          .string()
+          .optional()
+          .describe("For food: e.g. 'portuguese', 'vegetarian', 'seafood'")
+      }),
+      execute: async ({ category, area, cuisine }) => {
+        try {
+          const { near, places } = await actions.findPlaces(
+            category,
+            area,
+            cuisine
+          );
+          return {
+            ok: true as const,
+            summary: `Found ${places.length} ${category} near ${near}`,
+            near,
+            // Compact rows keep the model's context small
+            places: places.map((p) => ({
+              name: p.name,
+              kind: p.kind,
+              lat: p.lat,
+              lon: p.lon,
+              km: p.distanceKm,
+              ...(p.notable && { notable: true }),
+              ...(p.cuisine && { cuisine: p.cuisine })
+            }))
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false as const,
+            // Stop the model retrying a down service in a loop
+            error:
+              err instanceof ServiceError
+                ? `${message}. Place search is unavailable right now: do not call search_places again this turn. Continue the plan with add_item anyway, using well-known places you are confident exist, and mention in your reply that they weren't checked against a map.`
+                : message
+          };
+        }
+      }
+    }),
+
     update_trip_details: tool({
       description:
         "Change trip-level details: title, destination, dates, travellers, budget, pace, interests or notes. Only pass fields that change.",

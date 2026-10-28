@@ -1,5 +1,10 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import { callable, getAgentByName, type Connection } from "agents";
+import {
+  callable,
+  getAgentByName,
+  type Connection,
+  type ConnectionContext
+} from "agents";
 import {
   convertToModelMessages,
   pruneMessages,
@@ -9,9 +14,12 @@ import {
   wrapLanguageModel
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
+import { geocode } from "../services/geocode";
+import { findPlaces, type PlaceCategory } from "../services/places";
 import type { Trip, TripSummary } from "../shared/schema";
 import * as ops from "../shared/trip-ops";
 import type { OpContext, OpResult } from "../shared/trip-ops";
+import { applyEnrichment, enrichTrip, needsEnrichment } from "./enrich";
 import { systemPrompt } from "./prompt";
 import { createTripTools } from "./tools";
 
@@ -21,11 +29,17 @@ export const PLANNER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const CONTEXT_MESSAGES = 20;
 /** Max model steps (tool calls + final reply) per user message. */
 const MAX_STEPS = 10;
+/** Refresh weather on connect if older than this. */
+const WEATHER_MAX_AGE_MS = 6 * 3600_000;
 
 export type TripAgentState = {
   trip: Trip | null;
   canUndo: boolean;
   lastChange: { summary: string; at: string } | null;
+  /** When coordinates/weather were last refreshed from outside services. */
+  enrichedAt: string | null;
+  /** Problems from the last refresh, shown to the user. */
+  warnings: string[];
 };
 
 type Op = (trip: Trip, ctx: OpContext) => OpResult;
@@ -41,8 +55,12 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
   initialState: TripAgentState = {
     trip: null,
     canUndo: false,
-    lastChange: null
+    lastChange: null,
+    enrichedAt: null,
+    warnings: []
   };
+
+  private enrichment: Promise<void> | null = null;
 
   onStart() {
     this.sql`
@@ -69,11 +87,85 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
       new Date().toISOString()
     );
     this.setState({
+      ...this.state,
       trip,
       canUndo: false,
       lastChange: { summary: "Created trip", at: trip.createdAt }
     });
+    // Geocoding and weather fill in shortly after; creation doesn't wait
+    void this.refreshExternalData();
     return trip;
+  }
+
+  onConnect(_connection: Connection, _ctx: ConnectionContext) {
+    const { trip, enrichedAt } = this.state;
+    if (!trip) return;
+    const stale =
+      !enrichedAt || Date.now() - Date.parse(enrichedAt) > WEATHER_MAX_AGE_MS;
+    if (stale) void this.refreshExternalData();
+  }
+
+  /**
+   * Geocode the destination if needed and refresh weather. Not an undoable
+   * edit: it only adds outside data. Concurrent calls share one run.
+   */
+  @callable()
+  refreshExternalData(): Promise<void> {
+    this.enrichment ??= (async () => {
+      try {
+        const trip = this.state.trip;
+        if (!trip) return;
+        const today = new Date().toISOString().slice(0, 10);
+        const result = await enrichTrip(trip, this.env.CACHE, today);
+        const latest = this.state.trip;
+        if (!latest) return;
+        this.setState({
+          ...this.state,
+          trip: {
+            ...applyEnrichment(latest, result),
+            version: latest.version + 1
+          },
+          enrichedAt: new Date().toISOString(),
+          warnings: result.warnings
+        });
+      } catch (err) {
+        console.error("refreshing external data failed", err);
+      } finally {
+        this.enrichment = null;
+      }
+    })();
+    return this.enrichment;
+  }
+
+  /** Place search for the search_places tool. */
+  async findPlaces(category: PlaceCategory, area?: string, cuisine?: string) {
+    const trip = this.requireTrip();
+    let center: { lat: number; lon: number; name: string } | null = null;
+    if (area) {
+      const place = await geocode(
+        this.env.CACHE,
+        trip.details.destination.country
+          ? `${area}, ${trip.details.destination.country}`
+          : area
+      );
+      if (place) center = { lat: place.lat, lon: place.lon, name: place.name };
+    } else {
+      const { lat, lon, name } = trip.details.destination;
+      if (lat !== undefined && lon !== undefined) center = { lat, lon, name };
+    }
+    if (!center) {
+      throw new Error(
+        `Couldn't locate ${area ?? trip.details.destination.name} on the map`
+      );
+    }
+    const places = await findPlaces(
+      this.env.CACHE,
+      category,
+      center.lat,
+      center.lon,
+      cuisine
+    );
+    return { near: center.name, places };
   }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
@@ -225,10 +317,12 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
       n: number;
     }>`SELECT COUNT(*) AS n FROM snapshots`;
     this.setState({
+      ...this.state,
       trip: after,
       canUndo: n > 0,
       lastChange: { summary, at }
     });
+    if (needsEnrichment(before, after)) void this.refreshExternalData();
     if (summaryChanged(before, after)) {
       // Keep the owner's trip list in sync; a failure here shouldn't fail the edit
       await this.syncDirectory(after).catch(console.error);

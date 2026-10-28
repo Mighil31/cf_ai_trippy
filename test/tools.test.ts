@@ -63,6 +63,23 @@ describe("trip tools", () => {
     });
   });
 
+  it("add_item stores place coordinates when both are given", async () => {
+    const stub = await newTrip();
+    await callTool(stub, "add_item", {
+      date: "2026-11-12",
+      kind: "activity",
+      title: "Pena Palace",
+      placeName: "Pena Palace",
+      placeLat: 38.7876,
+      placeLon: -9.3906
+    });
+    expect((await stub.getTrip())?.days[0].items[0].place).toEqual({
+      name: "Pena Palace",
+      lat: 38.7876,
+      lon: -9.3906
+    });
+  });
+
   it("returns ok:false with the reason instead of throwing", async () => {
     const stub = await newTrip();
     const result = await callTool(stub, "add_item", {

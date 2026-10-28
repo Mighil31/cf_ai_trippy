@@ -25,7 +25,12 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["TripAgent", "UserDirectory"] }
+  ],
+
+  // Cache for geocoding, weather and places responses
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "cb7dd41c63f747339b8c4457336ce7ab" }
   ]
 
-  // Added in later phases: KV cache (Phase 3), Workflows (Phase 4)
+  // Added in Phase 4: Workflows
 }

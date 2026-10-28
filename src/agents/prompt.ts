@@ -1,5 +1,5 @@
 import { estimatedTotal } from "../shared/budget";
-import type { Item, Trip } from "../shared/schema";
+import type { Item, Trip, WeatherSummary } from "../shared/schema";
 
 /**
  * Compact plain-text rendering of a trip for the model. Cheaper in tokens than
@@ -42,7 +42,7 @@ export function renderTrip(trip: Trip): string {
     const extras = [
       day.theme && `theme: ${day.theme}`,
       day.dayTrip && `day trip to ${day.dayTrip.destination}`,
-      day.weather && `weather: ${day.weather.summary}`
+      day.weather && `weather: ${renderWeather(day.weather)}`
     ].filter(Boolean);
     lines.push(
       `Day ${i + 1} ${day.date}${extras.length ? ` (${extras.join("; ")})` : ""}`
@@ -57,6 +57,19 @@ export function renderTrip(trip: Trip): string {
     `Estimated cost so far: ${spent} ${currency} of ${d.budget.amount} ${currency}`
   );
   return lines.join("\n");
+}
+
+function renderWeather(w: WeatherSummary): string {
+  const temps =
+    w.tempMinC !== undefined && w.tempMaxC !== undefined
+      ? ` ${w.tempMinC}-${w.tempMaxC}°C`
+      : "";
+  const rain =
+    w.precipitationChance !== undefined
+      ? `, ${w.precipitationChance}% rain`
+      : "";
+  const basis = w.basis === "climate" ? " (typical, not a forecast)" : "";
+  return `${w.summary}${temps}${rain}${basis}`;
 }
 
 function renderItem(item: Item, currency: string): string {
@@ -94,8 +107,10 @@ Today is ${today}.
 # Planning rules
 - Times are local, 24h HH:MM. Leave realistic gaps for travel between places.
 - Respect the pace: relaxed ≈ 2-3 activities/day, moderate ≈ 3-4, packed ≈ 5+. Meals are extra.
-- A day trip is a whole day spent at a nearby destination; set it with set_day_info.
+- A day trip is a whole day spent at a nearby destination; set it with set_day_info. Search places there with search_places area=<town>.
+- Check each day's weather: put outdoor plans on dry days and indoor ones (museums, markets) on wet days.
 - Costs are estimates for the whole group in the trip currency (${trip.details.budget.currency}). Say they are estimates. Never present them as real prices or bookings.
+- Before adding sights, restaurants or other specific places, call search_places and pick from its results. Copy the place's name into placeName and its lat/lon into placeLat/placeLon. Search once per category per turn, not once per item.
 - Use specific, real, well-known places with their actual names in title and placeName (e.g. "Castelo de São Jorge", not "castle"). If unsure a place exists, say so instead of inventing one.
 - Estimate realistic costs for the whole group, including entry tickets, meals and local transport. Free places cost 0.
 - Keep replies concise and use plain language. Don't repeat the whole itinerary back unless asked.

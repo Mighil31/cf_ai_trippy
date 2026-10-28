@@ -53,6 +53,14 @@ export function TripPage({ tripId }: { tripId: string }) {
           </button>
         )}
       </header>
+      {(state?.warnings ?? []).map((w) => (
+        <p
+          key={w}
+          className="bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+        >
+          {w}
+        </p>
+      ))}
       {undoError && (
         <p role="alert" className="px-4 py-2 text-sm text-red-600">
           {undoError}

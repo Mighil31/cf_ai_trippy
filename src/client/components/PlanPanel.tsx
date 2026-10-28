@@ -1,5 +1,5 @@
 import { estimatedTotal } from "../../shared/budget";
-import type { Day, Item, Trip } from "../../shared/schema";
+import type { Day, Item, Trip, WeatherSummary } from "../../shared/schema";
 import { formatDate, formatMoney } from "../lib/format";
 
 /** Read-only view of the plan. Direct editing controls arrive in Phase 5. */
@@ -134,9 +134,11 @@ function DayCard({
             </span>
           )}
         </h3>
-        {day.theme && (
+        {(day.theme || day.weather) && (
           <p className="text-sm text-neutral-600 dark:text-neutral-400">
             {day.theme}
+            {day.theme && day.weather && " · "}
+            {day.weather && <WeatherLabel weather={day.weather} />}
           </p>
         )}
       </header>
@@ -152,6 +154,31 @@ function DayCard({
         </ol>
       )}
     </article>
+  );
+}
+
+function WeatherLabel({ weather: w }: { weather: WeatherSummary }) {
+  const temps =
+    w.tempMinC !== undefined && w.tempMaxC !== undefined
+      ? ` ${w.tempMinC}–${w.tempMaxC}°C`
+      : "";
+  const rain =
+    w.precipitationChance !== undefined && w.precipitationChance >= 20
+      ? `, ${w.precipitationChance}% rain`
+      : "";
+  return (
+    <span
+      title={
+        w.basis === "climate"
+          ? "Too far ahead for a forecast: this is last year's weather on the same date"
+          : "Forecast from Open-Meteo"
+      }
+    >
+      {w.summary}
+      {temps}
+      {rain}
+      {w.basis === "climate" && " (typical)"}
+    </span>
   );
 }
 
