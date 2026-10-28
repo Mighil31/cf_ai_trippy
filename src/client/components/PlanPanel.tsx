@@ -1,5 +1,11 @@
 import { estimatedTotal } from "../../shared/budget";
-import type { Day, Item, Trip, WeatherSummary } from "../../shared/schema";
+import type {
+  Day,
+  Issue,
+  Item,
+  Trip,
+  WeatherSummary
+} from "../../shared/schema";
 import { formatDate, formatMoney } from "../lib/format";
 
 /** Read-only view of the plan. Direct editing controls arrive in Phase 5. */
@@ -62,6 +68,8 @@ export function PlanPanel({
         )}
       </section>
 
+      {trip.issues.length > 0 && <IssueList trip={trip} />}
+
       {(trip.constraints.length > 0 || trip.lodging) && (
         <section className="space-y-3 text-sm">
           {trip.constraints.length > 0 && (
@@ -106,6 +114,36 @@ export function PlanPanel({
         ))}
       </section>
     </div>
+  );
+}
+
+const SEVERITY_STYLE: Record<Issue["severity"], string> = {
+  error: "border-red-500 bg-red-50 dark:bg-red-950/40",
+  warning: "border-amber-500 bg-amber-50 dark:bg-amber-950/40",
+  info: "border-sky-500 bg-sky-50 dark:bg-sky-950/40"
+};
+
+function IssueList({ trip }: { trip: Trip }) {
+  return (
+    <section aria-label="Issues">
+      <h2 className="mb-2 font-medium">
+        Things to check{" "}
+        <span className="text-sm font-normal text-neutral-500">
+          ({trip.issues.length})
+        </span>
+      </h2>
+      <ul className="space-y-1.5 text-sm">
+        {trip.issues.map((issue, i) => (
+          <li
+            key={`${issue.code}-${issue.itemId ?? issue.date ?? ""}-${i}`}
+            className={`border-l-4 px-3 py-1.5 ${SEVERITY_STYLE[issue.severity]}`}
+          >
+            <span className="sr-only">{issue.severity}: </span>
+            {issue.message}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

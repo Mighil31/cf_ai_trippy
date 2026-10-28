@@ -28,7 +28,28 @@ export type TripActions = {
     area?: string,
     cuisine?: string
   ): Promise<{ near: string; places: FoundPlace[] }>;
+  startPlanning(
+    dates?: string[],
+    request?: string
+  ): Promise<{ workflowId: string; dates: string[] }>;
+  startCheck(): Promise<{ workflowId: string }>;
 };
+
+/** Start a background job and report it to the model in plain terms. */
+async function startJob(
+  start: () => Promise<unknown>,
+  summary: string
+): Promise<ToolResult> {
+  try {
+    await start();
+    return { ok: true, summary };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
 
 export type ToolResult =
   | { ok: true; summary: string; [extra: string]: unknown }
@@ -343,6 +364,47 @@ export function createTripTools(actions: TripActions) {
                 : undefined,
             estimated: true
           })
+        )
+    }),
+
+    generate_itinerary: tool({
+      description:
+        "Build a full day-by-day plan for the whole trip in the background (takes about a minute). Use when the user wants the trip planned, or most days planned or redone. Locked items are kept. Do not also add items yourself.",
+      inputSchema: z.object({
+        request: z
+          .string()
+          .optional()
+          .describe("The user's wishes for the plan, in their words")
+      }),
+      execute: ({ request }) =>
+        startJob(
+          () => actions.startPlanning(undefined, request),
+          "Started planning the whole trip in the background. Tell the user the plan will appear in about a minute and they can watch progress at the top of the plan."
+        )
+    }),
+
+    regenerate_day: tool({
+      description:
+        "Re-plan one day from scratch in the background, keeping locked items. Use when the user wants a day redone rather than a small edit.",
+      inputSchema: z.object({
+        date: IsoDate.describe("YYYY-MM-DD"),
+        request: z.string().optional().describe("What the user wants that day")
+      }),
+      execute: ({ date, request }) =>
+        startJob(
+          () => actions.startPlanning([date], request),
+          `Started re-planning ${date} in the background. It will update in under a minute.`
+        )
+    }),
+
+    check_plan: tool({
+      description:
+        "Run a thorough check in the background: locate places on the map for travel-time checks and review the plan against the user's rules.",
+      inputSchema: z.object({}),
+      execute: () =>
+        startJob(
+          () => actions.startCheck(),
+          "Started a thorough check. Results will appear in the issues list shortly."
         )
     }),
 

@@ -14,23 +14,53 @@ import {
   wrapLanguageModel
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
-import { geocode } from "../services/geocode";
-import { findPlaces, type PlaceCategory } from "../services/places";
-import type { Trip, TripSummary } from "../shared/schema";
+import { geocode, locatePlace } from "../services/geocode";
+import {
+  findPlaces,
+  type FoundPlace,
+  type PlaceCategory
+} from "../services/places";
+import {
+  ItemInput,
+  MAX_ITEMS_PER_DAY,
+  type Issue,
+  type Trip,
+  type TripSummary
+} from "../shared/schema";
 import * as ops from "../shared/trip-ops";
 import type { OpContext, OpResult } from "../shared/trip-ops";
+import type {
+  GeneratedPlan,
+  JobProgress,
+  PlanParams
+} from "../workflows/plan-trip";
 import { applyEnrichment, enrichTrip, needsEnrichment } from "./enrich";
+import { PLANNER_MODEL } from "./llm";
 import { systemPrompt } from "./prompt";
 import { createTripTools } from "./tools";
+import { runChecks } from "./validate";
 
 export const MAX_SNAPSHOTS = 20;
-export const PLANNER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 /** Recent messages sent to the model; the trip itself is always in the prompt. */
 const CONTEXT_MESSAGES = 20;
 /** Max model steps (tool calls + final reply) per user message. */
 const MAX_STEPS = 10;
 /** Refresh weather on connect if older than this. */
 const WEATHER_MAX_AGE_MS = 6 * 3600_000;
+/** A job with no callback for this long is assumed lost. */
+const JOB_STALE_MS = 10 * 60_000;
+/** Max place lookups per deep check, to stay polite to Wikipedia. */
+const MAX_LOCATE = 25;
+
+/** A background Workflow run, shown as progress in the UI. */
+export type Job = {
+  workflowId: string;
+  kind: "plan" | "check";
+  status: "running" | "done" | "error";
+  message: string;
+  percent: number;
+  updatedAt: string;
+};
 
 export type TripAgentState = {
   trip: Trip | null;
@@ -40,6 +70,8 @@ export type TripAgentState = {
   enrichedAt: string | null;
   /** Problems from the last refresh, shown to the user. */
   warnings: string[];
+  /** The latest background Workflow run. */
+  job: Job | null;
 };
 
 type Op = (trip: Trip, ctx: OpContext) => OpResult;
@@ -57,7 +89,8 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
     canUndo: false,
     lastChange: null,
     enrichedAt: null,
-    warnings: []
+    warnings: [],
+    job: null
   };
 
   private enrichment: Promise<void> | null = null;
@@ -117,14 +150,8 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
         if (!trip) return;
         const today = new Date().toISOString().slice(0, 10);
         const result = await enrichTrip(trip, this.env.CACHE, today);
-        const latest = this.state.trip;
-        if (!latest) return;
-        this.setState({
-          ...this.state,
-          trip: {
-            ...applyEnrichment(latest, result),
-            version: latest.version + 1
-          },
+        if (!this.state.trip) return;
+        this.systemUpdate((latest) => applyEnrichment(latest, result), {
           enrichedAt: new Date().toISOString(),
           warnings: result.warnings
         });
@@ -168,6 +195,22 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
     return { near: center.name, places };
   }
 
+  /**
+   * Like findPlaces, for PlanTripWorkflow: failures return no places instead
+   * of throwing, since the planner can work without candidates.
+   */
+  async candidatePlaces(
+    category: PlaceCategory,
+    area?: string
+  ): Promise<FoundPlace[]> {
+    try {
+      return (await this.findPlaces(category, area)).places;
+    } catch (err) {
+      console.warn(`candidate search failed (${category})`, String(err));
+      return [];
+    }
+  }
+
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const trip = this.requireTrip();
     const workersai = createWorkersAI({ binding: this.env.AI });
@@ -194,6 +237,191 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
     });
 
     return result.toUIMessageStreamResponse({ onError: chatErrorMessage });
+  }
+
+  // ── Background jobs (Workflows) ─────────────────────────────────────
+
+  /** Generate the whole itinerary, or re-plan the given dates. */
+  @callable()
+  async startPlanning(dates?: string[], request?: string) {
+    const trip = this.requireTrip();
+    this.assertNoRunningJob();
+    const all = trip.days.map((d) => d.date);
+    const target = dates?.length ? dates.filter((d) => all.includes(d)) : all;
+    if (target.length === 0)
+      throw new Error("None of those dates are in the trip");
+
+    const params: PlanParams = { dates: target, ...(request && { request }) };
+    const workflowId = await this.runWorkflow("PLAN_TRIP", params);
+    this.setJob({
+      workflowId,
+      kind: "plan",
+      status: "running",
+      message: "Starting…",
+      percent: 0
+    });
+    return { workflowId, dates: target };
+  }
+
+  /** Locate places and review the plan against the traveller's rules. */
+  @callable()
+  async startCheck() {
+    this.requireTrip();
+    this.assertNoRunningJob();
+    const workflowId = await this.runWorkflow("VALIDATE_TRIP", {});
+    this.setJob({
+      workflowId,
+      kind: "check",
+      status: "running",
+      message: "Starting…",
+      percent: 0
+    });
+    return { workflowId };
+  }
+
+  async onWorkflowProgress(
+    _name: string,
+    workflowId: string,
+    progress: unknown
+  ) {
+    const job = this.state.job;
+    if (job?.workflowId !== workflowId) return;
+    const p = progress as JobProgress;
+    this.setJob({ ...job, message: p.message, percent: p.percent });
+  }
+
+  async onWorkflowComplete(
+    _name: string,
+    workflowId: string,
+    result?: unknown
+  ) {
+    const job = this.state.job;
+    if (job?.workflowId !== workflowId) return;
+    const summary =
+      (result as { summary?: string } | undefined)?.summary ??
+      (job.kind === "check" ? "Check finished" : "Plan ready");
+    this.setJob({ ...job, status: "done", message: summary, percent: 1 });
+    // A fresh plan is worth checking against the traveller's rules
+    if (job.kind === "plan" && this.state.trip?.constraints.length) {
+      await this.startCheck().catch((err) =>
+        console.error("couldn't start check", err)
+      );
+    }
+  }
+
+  async onWorkflowError(_name: string, workflowId: string, error: string) {
+    const job = this.state.job;
+    if (job?.workflowId !== workflowId) return;
+    console.error(`${job.kind} workflow failed`, error);
+    this.setJob({
+      ...job,
+      status: "error",
+      message:
+        job.kind === "plan"
+          ? "Trippy couldn't finish the plan. Please try again."
+          : "The check didn't finish. Please try again."
+    });
+  }
+
+  /** Called by PlanTripWorkflow: apply all generated days as one change. */
+  async applyGeneratedPlan(plan: GeneratedPlan) {
+    const dates = plan.days.map((d) => d.date);
+    const summary =
+      dates.length === 1
+        ? `Re-planned ${dates[0]}`
+        : `Planned ${dates.length} days`;
+    let itemCount = 0;
+    await this.applyOp("ai", (trip, ctx) => {
+      let next = trip;
+      if (plan.lodging && !trip.lodging) {
+        const { area, description, nightlyMin, nightlyMax } = plan.lodging;
+        next = ops.setLodging(next, {
+          area,
+          ...(description && { description }),
+          ...(nightlyMin !== undefined &&
+            nightlyMax !== undefined &&
+            nightlyMax >= nightlyMin && {
+              nightlyPrice: { min: nightlyMin, max: nightlyMax }
+            }),
+          estimated: true
+        }).trip;
+      }
+      for (const day of plan.days) {
+        if (!next.days.some((d) => d.date === day.date)) continue;
+        next = ops.setDayInfo(next, {
+          date: day.date,
+          patch: {
+            theme: day.theme.slice(0, 120),
+            dayTrip: day.dayTrip
+              ? { destination: day.dayTrip.slice(0, 120) }
+              : null
+          }
+        }).trip;
+        // Drop anything that still fails validation rather than the whole day
+        const locked = next.days
+          .find((d) => d.date === day.date)!
+          .items.filter((i) => i.locked).length;
+        const items = day.items
+          .filter((i) => ItemInput.safeParse(i).success)
+          .slice(0, MAX_ITEMS_PER_DAY - locked);
+        itemCount += items.length;
+        next = ops.replaceDayItems(next, { date: day.date, items }, ctx).trip;
+      }
+      return { trip: next, summary };
+    });
+    return { summary: `${summary} (${itemCount} items)` };
+  }
+
+  /** Called by ValidateTripWorkflow: find coordinates for unlocated places. */
+  async locateMissingPlaces(): Promise<number> {
+    const trip = this.requireTrip();
+    const { lat, lon, name } = trip.details.destination;
+    if (lat === undefined || lon === undefined) return 0;
+    const near = { lat, lon, name };
+
+    const missing = trip.days
+      .flatMap((d) => d.items.map((item) => ({ item, dayTrip: !!d.dayTrip })))
+      .filter(
+        ({ item }) =>
+          item.kind !== "transit" &&
+          item.kind !== "free_time" &&
+          item.place?.name &&
+          item.place.lat === undefined
+      )
+      .slice(0, MAX_LOCATE);
+
+    const found = new Map<string, { lat: number; lon: number }>();
+    for (const { item, dayTrip } of missing) {
+      const pos = await locatePlace(
+        this.env.CACHE,
+        item.place!.name,
+        near,
+        dayTrip ? 150 : 60
+      ).catch(() => null);
+      if (pos) found.set(item.id, pos);
+    }
+    if (found.size > 0) {
+      this.systemUpdate((t) => {
+        const next = structuredClone(t);
+        for (const day of next.days) {
+          for (const item of day.items) {
+            const pos = found.get(item.id);
+            if (pos && item.place) Object.assign(item.place, pos);
+          }
+        }
+        return next;
+      });
+    }
+    return found.size;
+  }
+
+  /** Called by ValidateTripWorkflow with the LLM's rule review. */
+  async setReviewIssues(issues: Issue[]) {
+    const next = this.systemUpdate((t) => ({
+      ...t,
+      issues: issues.filter((i) => i.code.startsWith("review."))
+    }));
+    return { issues: next.issues.length };
   }
 
   @callable()
@@ -313,6 +541,7 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
   }
 
   private async commit(before: Trip, after: Trip, summary: string, at: string) {
+    after.issues = runChecks(after);
     const [{ n }] = this.sql<{
       n: number;
     }>`SELECT COUNT(*) AS n FROM snapshots`;
@@ -326,6 +555,43 @@ export class TripAgent extends AIChatAgent<Env, TripAgentState> {
     if (summaryChanged(before, after)) {
       // Keep the owner's trip list in sync; a failure here shouldn't fail the edit
       await this.syncDirectory(after).catch(console.error);
+    }
+  }
+
+  /**
+   * Change the trip without an undo snapshot: outside data and check results,
+   * not edits. Re-runs the checks and bumps the version.
+   */
+  private systemUpdate(
+    mutate: (trip: Trip) => Trip,
+    extra: Partial<TripAgentState> = {}
+  ): Trip {
+    const latest = this.requireTrip();
+    const next = mutate(latest);
+    next.version = latest.version + 1;
+    next.issues = runChecks(next);
+    this.setState({ ...this.state, ...extra, trip: next });
+    return next;
+  }
+
+  private setJob(job: Omit<Job, "updatedAt">) {
+    this.setState({
+      ...this.state,
+      job: { ...job, updatedAt: new Date().toISOString() }
+    });
+  }
+
+  private assertNoRunningJob() {
+    const job = this.state.job;
+    if (
+      job?.status === "running" &&
+      Date.now() - Date.parse(job.updatedAt) < JOB_STALE_MS
+    ) {
+      throw new Error(
+        job.kind === "plan"
+          ? "Trippy is already working on the plan"
+          : "Trippy is already checking the plan"
+      );
     }
   }
 

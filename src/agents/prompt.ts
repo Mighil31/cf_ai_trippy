@@ -51,6 +51,13 @@ export function renderTrip(trip: Trip): string {
     for (const item of day.items) lines.push(`  ${renderItem(item, currency)}`);
   });
 
+  if (trip.issues.length) {
+    lines.push("", "Issues found by checks:");
+    for (const issue of trip.issues) {
+      lines.push(`  ${issue.severity}: ${issue.message}`);
+    }
+  }
+
   const spent = estimatedTotal(trip);
   lines.push(
     "",
@@ -103,6 +110,8 @@ Today is ${today}.
 - Items marked [LOCKED] were pinned by the user: do not change, move or remove them. Tell the user to unlock them if needed.
 - When the user states a lasting preference or rule ("no museums", "we're vegetarian", "must see the Eiffel Tower"), save it with add_constraint as well as acting on it.
 - If a request is ambiguous and the choice matters, ask one short question instead of guessing.
+- To plan the whole trip (or most of it), call generate_itinerary once instead of adding many items yourself. To redo one day, use regenerate_day. Both run in the background.
+- If the issues list shows problems, mention the important ones briefly and offer to fix them.
 
 # Planning rules
 - Times are local, 24h HH:MM. Leave realistic gaps for travel between places.

@@ -19,6 +19,8 @@ Built entirely on the Cloudflare free tier for the Cloudflare AI assignment.
 
 - **Worker**: API, static assets, agent routing (`src/server.ts`)
 - **Agents SDK**: `TripAgent` (per trip) and `UserDirectory` (per anonymous user), both Durable Objects (`src/agents/`)
+- **Workflows** (`src/workflows/`): `PlanTripWorkflow` builds or rebuilds days (outline → places → one LLM step per day → apply as one undoable change); `ValidateTripWorkflow` locates places and reviews the plan against the traveller's rules
+- **Checks** (`src/agents/validate.ts`): instant rule-based checks on every change (overlaps, travel time, pace, weather, budget, time-of-day rules)
 - **React + Vite + Tailwind**: SPA (`src/client/`)
 - **Services** (`src/services/`): keyless outside data, cached in Workers KV
   - Geocoding and weather: [Open-Meteo](https://open-meteo.com/)

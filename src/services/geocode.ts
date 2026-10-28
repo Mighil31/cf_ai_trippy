@@ -1,4 +1,5 @@
 import { cached, fetchJson } from "./http";
+import { distanceKm } from "./travel";
 
 /** Open-Meteo geocoding: free, no key, includes timezone. */
 const GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
@@ -75,4 +76,56 @@ export async function geocode(
     timezone: best.timezone,
     population: best.population
   };
+}
+
+const WIKIPEDIA_URL = "https://en.wikipedia.org/w/api.php";
+
+/**
+ * Find coordinates for a named place (e.g. "São Jorge Castle") near a point,
+ * using Wikipedia search. Only accepts a hit within `maxKm`, so a same-named
+ * place elsewhere isn't picked. Returns null if nothing suitable is found.
+ */
+export async function locatePlace(
+  kv: KVNamespace,
+  name: string,
+  near: { lat: number; lon: number; name: string },
+  maxKm = 60
+): Promise<{ lat: number; lon: number } | null> {
+  const query = `${name} ${near.name}`;
+  const pages = await cached(
+    kv,
+    `locate:v1:${query.toLowerCase()}`,
+    TTL,
+    async () => {
+      const url = new URL(WIKIPEDIA_URL);
+      for (const [k, v] of Object.entries({
+        action: "query",
+        format: "json",
+        formatversion: "2",
+        generator: "search",
+        gsrsearch: query,
+        gsrlimit: "3",
+        prop: "coordinates"
+      })) {
+        url.searchParams.set(k, v);
+      }
+      const data = await fetchJson<{
+        query?: {
+          pages?: {
+            index?: number;
+            coordinates?: { lat: number; lon: number }[];
+          }[];
+        };
+      }>("locate", url);
+      return (data.query?.pages ?? [])
+        .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+        .map((p) => p.coordinates?.[0] ?? null);
+    }
+  );
+  for (const pos of pages) {
+    if (pos && distanceKm(near, pos) <= maxKm) {
+      return { lat: pos.lat, lon: pos.lon };
+    }
+  }
+  return null;
 }

@@ -2,6 +2,8 @@ import { routeAgentRequest } from "agents";
 
 export { TripAgent } from "./agents/trip-agent";
 export { UserDirectory } from "./agents/user-directory";
+export { PlanTripWorkflow } from "./workflows/plan-trip";
+export { ValidateTripWorkflow } from "./workflows/validate-trip";
 
 export default {
   async fetch(request: Request, env: Env) {

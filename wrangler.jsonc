@@ -30,7 +30,19 @@
   // Cache for geocoding, weather and places responses
   "kv_namespaces": [
     { "binding": "CACHE", "id": "cb7dd41c63f747339b8c4457336ce7ab" }
-  ]
+  ],
 
-  // Added in Phase 4: Workflows
+  // Durable multi-step jobs: plan generation and the deep plan check
+  "workflows": [
+    {
+      "name": "trippy-plan-trip",
+      "binding": "PLAN_TRIP",
+      "class_name": "PlanTripWorkflow"
+    },
+    {
+      "name": "trippy-validate-trip",
+      "binding": "VALIDATE_TRIP",
+      "class_name": "ValidateTripWorkflow"
+    }
+  ]
 }
