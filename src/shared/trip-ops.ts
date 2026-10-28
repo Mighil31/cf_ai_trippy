@@ -182,7 +182,7 @@ export function removeConstraint(trip: Trip, constraintId: string): OpResult {
 
 export function addItem(
   trip: Trip,
-  input: { date: string; item: unknown; index?: number },
+  input: { date: string; item: unknown; index?: number | null },
   ctx: OpContext
 ): OpResult {
   const fields = parse(ItemInput, input.item);
@@ -197,24 +197,45 @@ export function addItem(
     source: ctx.actor
   };
   const index =
-    input.index === undefined
+    input.index == null
       ? chronologicalIndex(day.items, item.startTime)
       : Math.max(0, Math.min(input.index, day.items.length));
   day.items.splice(index, 0, item);
   return { trip: next, summary: `Added "${item.title}" on ${day.date}` };
 }
 
+const CLEARABLE_ITEM_FIELDS = [
+  "description",
+  "place",
+  "startTime",
+  "endTime",
+  "cost",
+  "notes"
+] as const;
+
 export function updateItem(
   trip: Trip,
   input: { itemId: string; patch: unknown },
   ctx: OpContext
 ): OpResult {
-  const patch = parse(ItemPatch, input.patch);
+  // null clears an optional field (undefined doesn't survive JSON transport)
+  const raw = (input.patch ?? {}) as Record<string, unknown>;
+  const cleared = CLEARABLE_ITEM_FIELDS.filter((k) => raw[k] === null);
+  const patch = parse(
+    ItemPatch,
+    Object.fromEntries(
+      Object.entries(raw).filter(
+        ([k]) => !(cleared as readonly string[]).includes(k)
+      )
+    )
+  );
   const next = structuredClone(trip);
   const { day, index, item } = findItem(next, input.itemId);
   assertEditable(item, ctx);
 
-  day.items[index] = parse(Item, { ...item, ...patch });
+  const merged: Record<string, unknown> = { ...item, ...patch };
+  for (const key of cleared) delete merged[key];
+  day.items[index] = parse(Item, merged);
   return { trip: next, summary: `Updated "${day.items[index].title}"` };
 }
 
@@ -233,7 +254,7 @@ export function removeItem(
 
 export function moveItem(
   trip: Trip,
-  input: { itemId: string; toDate: string; toIndex?: number },
+  input: { itemId: string; toDate: string; toIndex?: number | null },
   ctx: OpContext
 ): OpResult {
   const next = structuredClone(trip);
@@ -244,7 +265,7 @@ export function moveItem(
 
   from.day.items.splice(from.index, 1);
   const index =
-    input.toIndex === undefined
+    input.toIndex == null
       ? chronologicalIndex(target.items, from.item.startTime)
       : Math.max(0, Math.min(input.toIndex, target.items.length));
   target.items.splice(index, 0, from.item);

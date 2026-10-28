@@ -216,3 +216,31 @@ describe("ValidateTripWorkflow", () => {
     expect(state.lastChange?.summary).toMatch(/Added "Castle at dawn"/);
   });
 });
+
+describe("creating a trip with autoPlan", () => {
+  it("starts planning straight away", async () => {
+    await using introspector = await introspectWorkflow(env.PLAN_TRIP);
+    await introspector.modifyAll(async (m) => {
+      await m.mockStepResult(
+        { name: "outline days" },
+        {
+          days: DATES.map((date) => ({ date, theme: "Explore", dayTrip: null }))
+        }
+      );
+      for (const date of DATES) {
+        await m.mockStepResult({ name: `plan ${date}` }, dayItems(1));
+      }
+    });
+    const directory = await getAgentByName(
+      env.UserDirectory,
+      crypto.randomUUID()
+    );
+    const { id } = await directory.createTrip(details(), { autoPlan: true });
+    const stub = await getAgentByName(env.TripAgent, id);
+
+    const [instance] = await introspector.get();
+    await instance.waitForStatus("complete");
+    await waitForJob(stub, "done");
+    expect((await stub.getTrip())!.days[0].items).toHaveLength(2);
+  });
+});

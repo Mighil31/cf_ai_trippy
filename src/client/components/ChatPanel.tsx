@@ -1,6 +1,6 @@
 import type { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, type FormEvent, type RefObject } from "react";
 
 type Chat = ReturnType<typeof useAgentChat>;
 
@@ -11,9 +11,19 @@ const SUGGESTIONS = [
   "We're vegetarian — keep that in mind"
 ];
 
-export function ChatPanel({ chat }: { chat: Chat }) {
+export function ChatPanel({
+  chat,
+  input,
+  setInput,
+  inputRef
+}: {
+  chat: Chat;
+  /** Lifted so plan actions ("Ask Trippy") can prefill the message. */
+  input: string;
+  setInput: (text: string) => void;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+}) {
   const { messages, sendMessage, status, stop, error } = chat;
-  const [input, setInput] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const busy = status === "submitted" || status === "streaming";
 
@@ -34,7 +44,10 @@ export function ChatPanel({ chat }: { chat: Chat }) {
   }
 
   return (
-    <section aria-label="Chat with Trippy" className="flex min-h-0 flex-col">
+    <section
+      aria-label="Chat with Trippy"
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
           <div className="space-y-3 text-sm">
@@ -75,6 +88,7 @@ export function ChatPanel({ chat }: { chat: Chat }) {
         className="flex gap-2 border-t border-neutral-200 p-3 dark:border-neutral-800"
       >
         <textarea
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {

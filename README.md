@@ -6,6 +6,14 @@ Built entirely on the Cloudflare free tier for the Cloudflare AI assignment.
 
 > 🚧 Work in progress. See [`PROMPTS.md`](PROMPTS.md) for the AI prompts used to build it.
 
+## What it does
+
+- **Create a trip** with destination, dates, travellers, budget, pace and interests. Trippy drafts a full day-by-day itinerary in about a minute, with real places, weather per day, a suggested area to stay and cost estimates
+- **Chat to change anything**: "make day 2 a day trip to Sintra", "we're vegetarian", "push lunch to 13:00". Trippy edits the plan with tools and remembers your rules
+- **Or edit directly**: move, reorder, lock, edit, delete and add items; redo a single day; edit trip details and rules
+- **Checks after every change**: overlapping times, travel time between places, pace, rain on outdoor plans, budget, your time rules, plus an AI review against your other rules
+- **Undo** any change, including a whole generated plan
+
 ## How it meets the assignment
 
 | Requirement | Implementation |

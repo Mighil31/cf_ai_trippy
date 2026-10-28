@@ -4,7 +4,20 @@ import type {
   UserDirectory,
   UserDirectoryState
 } from "../../agents/user-directory";
-import type { Pace, TripDetails } from "../../shared/schema";
+import {
+  MAX_TRIP_DAYS,
+  tripLength,
+  type Pace,
+  type TripDetails,
+  type TripSummary
+} from "../../shared/schema";
+import {
+  ErrorText,
+  Field,
+  InterestPicker,
+  LinkButton,
+  PrimaryButton
+} from "../components/form";
 import { formatDate } from "../lib/format";
 import { navigate } from "../lib/router";
 import { getUserId } from "../lib/user";
@@ -14,46 +27,44 @@ export function HomePage() {
     agent: "UserDirectory",
     name: getUserId()
   });
-  const trips = directory.state?.trips ?? [];
+  const trips = directory.state?.trips;
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
       <header className="mb-8">
         <h1 className="text-3xl font-semibold tracking-tight">Trippy</h1>
         <p className="mt-1 text-neutral-600 dark:text-neutral-400">
-          Describe a trip and Trippy builds the itinerary with you.
+          Tell Trippy where you're going. It drafts a day-by-day plan around
+          your interests, budget and the weather, then keeps it up to date as
+          you change things.
         </p>
       </header>
 
       <NewTripForm
-        onCreate={async (details) => {
-          const summary = await directory.stub.createTrip(details);
+        onCreate={async (details, autoPlan) => {
+          const summary = await directory.stub.createTrip(details, {
+            autoPlan
+          });
           navigate(`/trips/${summary.id}`);
         }}
       />
 
       <section className="mt-10">
         <h2 className="mb-3 text-lg font-medium">My trips</h2>
-        {trips.length === 0 ? (
-          <p className="text-sm text-neutral-500">No trips yet.</p>
+        {trips === undefined ? (
+          <p className="text-sm text-neutral-500">Loading…</p>
+        ) : trips.length === 0 ? (
+          <p className="text-sm text-neutral-500">
+            No trips yet. Trips are saved in this browser.
+          </p>
         ) : (
           <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
             {trips.map((t) => (
-              <li key={t.id}>
-                <a
-                  href={`/trips/${t.id}`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate(`/trips/${t.id}`);
-                  }}
-                  className="flex items-baseline justify-between gap-4 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-900"
-                >
-                  <span className="font-medium">{t.title}</span>
-                  <span className="shrink-0 text-sm text-neutral-500">
-                    {t.destination} · {formatDate(t.startDate)}
-                  </span>
-                </a>
-              </li>
+              <TripRow
+                key={t.id}
+                trip={t}
+                onDelete={() => directory.stub.deleteTrip(t.id)}
+              />
             ))}
           </ul>
         )}
@@ -62,13 +73,65 @@ export function HomePage() {
   );
 }
 
-const PACES: Pace[] = ["relaxed", "moderate", "packed"];
+function TripRow({
+  trip,
+  onDelete
+}: {
+  trip: TripSummary;
+  onDelete: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <li className="flex items-center gap-2 pr-2 hover:bg-neutral-50 dark:hover:bg-neutral-900">
+      <a
+        href={`/trips/${trip.id}`}
+        onClick={(e) => {
+          e.preventDefault();
+          navigate(`/trips/${trip.id}`);
+        }}
+        className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-4 px-4 py-3"
+      >
+        <span className="font-medium">{trip.title}</span>
+        <span className="text-sm text-neutral-500">
+          {trip.destination} · {formatDate(trip.startDate)}
+        </span>
+      </a>
+      {confirming ? (
+        <span className="flex shrink-0 items-center gap-1 text-sm">
+          Delete?
+          <LinkButton
+            onClick={() => onDelete()}
+            className="!text-red-600"
+            aria-label={`Confirm deleting ${trip.title}`}
+          >
+            Yes
+          </LinkButton>
+          <LinkButton onClick={() => setConfirming(false)}>No</LinkButton>
+        </span>
+      ) : (
+        <LinkButton
+          onClick={() => setConfirming(true)}
+          aria-label={`Delete ${trip.title}`}
+        >
+          Delete
+        </LinkButton>
+      )}
+    </li>
+  );
+}
+
+const PACES: { value: Pace; label: string }[] = [
+  { value: "relaxed", label: "Relaxed (2–3 things a day)" },
+  { value: "moderate", label: "Moderate (3–4 a day)" },
+  { value: "packed", label: "Packed (5+ a day)" }
+];
 
 function NewTripForm({
   onCreate
 }: {
-  onCreate: (details: TripDetails) => Promise<void>;
+  onCreate: (details: TripDetails, autoPlan: boolean) => Promise<void>;
 }) {
+  const [interests, setInterests] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -76,27 +139,34 @@ function NewTripForm({
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const destination = String(f.get("destination")).trim();
+    const startDate = String(f.get("startDate"));
+    const endDate = String(f.get("endDate"));
+
+    // Quick checks here; the server validates everything again
+    const days = tripLength(startDate, endDate);
+    if (days < 1)
+      return setError("The end date must be on or after the start date.");
+    if (days > MAX_TRIP_DAYS)
+      return setError(`Trips can be at most ${MAX_TRIP_DAYS} days.`);
+
     const details: TripDetails = {
       title: String(f.get("title")).trim() || `Trip to ${destination}`,
       destination: { name: destination },
-      startDate: String(f.get("startDate")),
-      endDate: String(f.get("endDate")),
+      startDate,
+      endDate,
       travellers: Number(f.get("travellers")),
       budget: {
         amount: Number(f.get("budget")),
         currency: String(f.get("currency")).trim().toUpperCase()
       },
-      interests: String(f.get("interests"))
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
+      interests,
       pace: f.get("pace") as Pace,
       notes: String(f.get("notes")).trim() || undefined
     };
     setBusy(true);
     setError(null);
     try {
-      await onCreate(details);
+      await onCreate(details, f.get("autoPlan") === "on");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -109,16 +179,18 @@ function NewTripForm({
       className="grid gap-4 rounded-lg border border-neutral-200 p-5 sm:grid-cols-2 dark:border-neutral-800"
     >
       <h2 className="text-lg font-medium sm:col-span-2">Plan a new trip</h2>
-      <Field label="Destination" className="sm:col-span-2">
-        <input name="destination" required placeholder="Lisbon, Portugal" />
+      <Field label="Where to?" className="sm:col-span-2">
+        <input
+          name="destination"
+          required
+          maxLength={120}
+          placeholder="Lisbon, Portugal"
+        />
       </Field>
-      <Field label="Trip name (optional)" className="sm:col-span-2">
-        <input name="title" placeholder="Lisbon long weekend" />
-      </Field>
-      <Field label="Start date">
+      <Field label="From">
         <input name="startDate" type="date" required />
       </Field>
-      <Field label="End date">
+      <Field label="To">
         <input name="endDate" type="date" required />
       </Field>
       <Field label="Travellers">
@@ -127,19 +199,20 @@ function NewTripForm({
           type="number"
           min={1}
           max={20}
+          required
           defaultValue={2}
         />
       </Field>
       <Field label="Pace">
         <select name="pace" defaultValue="moderate">
           {PACES.map((p) => (
-            <option key={p} value={p}>
-              {p}
+            <option key={p.value} value={p.value}>
+              {p.label}
             </option>
           ))}
         </select>
       </Field>
-      <Field label="Total budget">
+      <Field label="Total budget for the group">
         <input
           name="budget"
           type="number"
@@ -150,52 +223,46 @@ function NewTripForm({
         />
       </Field>
       <Field label="Currency">
-        <input name="currency" required defaultValue="EUR" maxLength={3} />
+        <input
+          name="currency"
+          required
+          defaultValue="EUR"
+          maxLength={3}
+          pattern="[A-Za-z]{3}"
+          title="3-letter currency code, e.g. EUR"
+        />
       </Field>
-      <Field label="Interests (comma separated)" className="sm:col-span-2">
-        <input name="interests" placeholder="food, history, viewpoints" />
-      </Field>
-      <Field label="Anything else? (optional)" className="sm:col-span-2">
+      <div className="sm:col-span-2">
+        <InterestPicker value={interests} onChange={setInterests} />
+      </div>
+      <Field
+        label="Anything else Trippy should know?"
+        className="sm:col-span-2"
+      >
         <textarea
           name="notes"
           rows={2}
-          placeholder="Vegetarian, no early mornings…"
+          maxLength={2000}
+          placeholder="We're vegetarian, no early mornings, one of us uses a wheelchair…"
         />
       </Field>
+      <Field label="Trip name (optional)" className="sm:col-span-2">
+        <input name="title" maxLength={120} placeholder="Lisbon long weekend" />
+      </Field>
+      <label className="flex items-center gap-2 text-sm sm:col-span-2">
+        <input type="checkbox" name="autoPlan" defaultChecked />
+        Draft a day-by-day itinerary for me right away
+      </label>
       {error && (
-        <p
-          role="alert"
-          className="text-sm whitespace-pre-wrap text-red-600 sm:col-span-2"
-        >
-          {error}
-        </p>
+        <div className="sm:col-span-2">
+          <ErrorText>{error}</ErrorText>
+        </div>
       )}
       <div className="sm:col-span-2">
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-md bg-orange-600 px-4 py-2 font-medium text-white hover:bg-orange-700 disabled:opacity-60"
-        >
+        <PrimaryButton type="submit" disabled={busy}>
           {busy ? "Creating…" : "Create trip"}
-        </button>
+        </PrimaryButton>
       </div>
     </form>
-  );
-}
-
-function Field({
-  label,
-  className = "",
-  children
-}: {
-  label: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className={`field flex flex-col gap-1 text-sm ${className}`}>
-      <span className="text-neutral-600 dark:text-neutral-400">{label}</span>
-      {children}
-    </label>
   );
 }

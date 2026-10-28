@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { renderTrip } from "../src/agents/prompt";
-import { estimatedTotal } from "../src/shared/budget";
+import { budgetBreakdown, estimatedTotal } from "../src/shared/budget";
 import type { TripAgent } from "../src/agents/trip-agent";
 import { createTripTools, type ToolResult } from "../src/agents/tools";
 import { details } from "./fixtures";
@@ -223,5 +223,41 @@ describe("renderTrip", () => {
     // 40 + 120/night midpoint × 2 nights
     expect(estimatedTotal(trip)).toBe(280);
     expect(text).toContain("Estimated cost so far: 280 EUR of 1500 EUR");
+  });
+});
+
+describe("budgetBreakdown", () => {
+  it("splits costs by category and day, including lodging nights", async () => {
+    const stub = await newTrip();
+    await stub.addItem("2026-11-12", {
+      kind: "meal",
+      title: "Lunch",
+      cost: { amount: 40, estimated: true }
+    });
+    await stub.addItem("2026-11-12", {
+      kind: "activity",
+      title: "Castle",
+      cost: { amount: 30, estimated: true }
+    });
+    await stub.addItem("2026-11-13", {
+      kind: "transit",
+      title: "Train",
+      cost: { amount: 10.4, estimated: true }
+    });
+    await stub.setLodging({
+      area: "Baixa",
+      nightlyPrice: { min: 100, max: 140 },
+      estimated: true
+    });
+    const b = budgetBreakdown((await stub.getTrip())!);
+    expect(b.byCategory).toEqual({
+      lodging: 240,
+      food: 40,
+      activities: 30,
+      transport: 10,
+      other: 0
+    });
+    expect(b.byDay.map((d) => d.total)).toEqual([70, 10, 0]);
+    expect(b.total).toBe(320);
   });
 });

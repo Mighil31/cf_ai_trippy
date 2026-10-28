@@ -27,7 +27,10 @@ export class UserDirectory extends Agent<Env, UserDirectoryState> {
   }
 
   @callable()
-  async createTrip(details: unknown): Promise<TripSummary> {
+  async createTrip(
+    details: unknown,
+    options: { autoPlan?: boolean } = {}
+  ): Promise<TripSummary> {
     if (this.state.trips.length >= MAX_TRIPS_PER_USER) {
       throw new Error(`You can have at most ${MAX_TRIPS_PER_USER} trips`);
     }
@@ -44,6 +47,12 @@ export class UserDirectory extends Agent<Env, UserDirectoryState> {
     });
     const summary = toSummary(trip);
     this.setTrips([summary, ...this.state.trips]);
+    if (options.autoPlan) {
+      // Best effort: the trip exists either way, and the user can start it later
+      await tripAgent
+        .startPlanning()
+        .catch((err) => console.error("couldn't start planning", err));
+    }
     return summary;
   }
 

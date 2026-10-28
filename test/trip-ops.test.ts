@@ -233,6 +233,43 @@ describe("items", () => {
     );
   });
 
+  it("clears optional fields passed as null", () => {
+    const c = ctx();
+    let trip = ops.addItem(
+      newTrip(),
+      {
+        date: day1,
+        item: {
+          kind: "meal",
+          title: "Lunch",
+          startTime: "12:00",
+          endTime: "13:00",
+          place: { name: "Somewhere" }
+        }
+      },
+      c
+    ).trip;
+    trip = ops.updateItem(
+      trip,
+      {
+        itemId: "id-1",
+        patch: { endTime: null, place: null, title: "Late lunch" }
+      },
+      c
+    ).trip;
+    expect(trip.days[0].items[0]).toMatchObject({
+      title: "Late lunch",
+      startTime: "12:00"
+    });
+    expect(trip.days[0].items[0].endTime).toBeUndefined();
+    expect(trip.days[0].items[0].place).toBeUndefined();
+    // Required fields can't be cleared
+    expectOpError(
+      () => ops.updateItem(trip, { itemId: "id-1", patch: { title: null } }, c),
+      "INVALID"
+    );
+  });
+
   it("moves an item to another day in chronological position", () => {
     const c = ctx();
     let trip = newTrip();
@@ -273,6 +310,46 @@ describe("items", () => {
       "Dinner"
     ]);
     expect(summary).toMatch(/to 2026-11-13/);
+  });
+
+  it("treats a null index (from JSON RPC) as 'order by time'", () => {
+    const c = ctx();
+    let trip = newTrip();
+    trip = ops.addItem(
+      trip,
+      {
+        date: day1,
+        item: { kind: "meal", title: "Early", startTime: "08:00" }
+      },
+      c
+    ).trip;
+    trip = ops.addItem(
+      trip,
+      {
+        date: day1,
+        item: { kind: "meal", title: "Late", startTime: "20:00" },
+        index: null
+      },
+      c
+    ).trip;
+    trip = ops.addItem(
+      trip,
+      {
+        date: "2026-11-13",
+        item: { kind: "activity", title: "Noon", startTime: "12:00" }
+      },
+      c
+    ).trip;
+    trip = ops.moveItem(
+      trip,
+      { itemId: "id-3", toDate: day1, toIndex: null },
+      c
+    ).trip;
+    expect(trip.days[0].items.map((i) => i.title)).toEqual([
+      "Early",
+      "Noon",
+      "Late"
+    ]);
   });
 
   it("reorders within a day by explicit index", () => {
