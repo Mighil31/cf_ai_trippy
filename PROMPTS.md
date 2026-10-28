@@ -71,3 +71,19 @@ perfunctory.workers.dev
 ```
 commit and start phase 1. Add the plan to gitignore
 ```
+
+---
+
+## 7 — 2026-10-29 — Explain the schema
+
+```
+Explain schema.ts
+```
+
+---
+
+## 8 — 2026-10-29 — Commit, push, start Phase 2
+
+```
+commit, push and continue to the next phase
+```
