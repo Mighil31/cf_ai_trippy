@@ -18,6 +18,7 @@
     "check": "oxfmt --check . && oxlint src/ test/ && tsc --noEmit && tsc --noEmit -p test"
   },
   "dependencies": {
+    "@ai-sdk/react": "^4.0.160",
     "@cloudflare/ai-chat": "^0.12.2",
     "agents": "^0.31.0",
     "ai": "^7.0.155",

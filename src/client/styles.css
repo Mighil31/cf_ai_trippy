@@ -15,3 +15,9 @@ body {
   @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
   font-family: ui-sans-serif, system-ui, sans-serif;
 }
+
+.field input,
+.field select,
+.field textarea {
+  @apply rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-neutral-900 dark:border-neutral-700 dark:text-neutral-100;
+}

@@ -1,9 +1,26 @@
-import { Agent, callable, getAgentByName, type Connection } from "agents";
+import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
+import { callable, getAgentByName, type Connection } from "agents";
+import {
+  convertToModelMessages,
+  pruneMessages,
+  simulateStreamingMiddleware,
+  stepCountIs,
+  streamText,
+  wrapLanguageModel
+} from "ai";
+import { createWorkersAI } from "workers-ai-provider";
 import type { Trip, TripSummary } from "../shared/schema";
 import * as ops from "../shared/trip-ops";
 import type { OpContext, OpResult } from "../shared/trip-ops";
+import { systemPrompt } from "./prompt";
+import { createTripTools } from "./tools";
 
 export const MAX_SNAPSHOTS = 20;
+export const PLANNER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+/** Recent messages sent to the model; the trip itself is always in the prompt. */
+const CONTEXT_MESSAGES = 20;
+/** Max model steps (tool calls + final reply) per user message. */
+const MAX_STEPS = 10;
 
 export type TripAgentState = {
   trip: Trip | null;
@@ -14,11 +31,13 @@ export type TripAgentState = {
 type Op = (trip: Trip, ctx: OpContext) => OpResult;
 
 /**
- * One instance per trip. Holds the itinerary, preferences, budget and undo
- * snapshots. State is broadcast to connected clients; clients change it only
- * through the callable methods below. Becomes an AIChatAgent in Phase 2.
+ * One instance per trip. Holds the itinerary, preferences, budget, chat
+ * history and undo snapshots. State is broadcast to connected clients; clients
+ * change it only through the callable methods below or by chatting.
  */
-export class TripAgent extends Agent<Env, TripAgentState> {
+export class TripAgent extends AIChatAgent<Env, TripAgentState> {
+  maxPersistedMessages = 200;
+
   initialState: TripAgentState = {
     trip: null,
     canUndo: false,
@@ -55,6 +74,34 @@ export class TripAgent extends Agent<Env, TripAgentState> {
       lastChange: { summary: "Created trip", at: trip.createdAt }
     });
     return trip;
+  }
+
+  async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
+    const trip = this.requireTrip();
+    const workersai = createWorkersAI({ binding: this.env.AI });
+
+    const result = streamText({
+      // workers-ai-provider 4.0.1 duplicates every streamed tool-call delta for
+      // Llama 3.3 (it reads both `tool_calls` and `choices[0].delta.tool_calls`
+      // from each chunk), corrupting the arguments. Generate each step whole
+      // and replay it as a stream instead.
+      model: wrapLanguageModel({
+        model: workersai(PLANNER_MODEL),
+        middleware: simulateStreamingMiddleware()
+      }),
+      system: systemPrompt(trip, new Date().toISOString().slice(0, 10)),
+      messages: pruneMessages({
+        messages: await convertToModelMessages(
+          this.messages.slice(-CONTEXT_MESSAGES)
+        ),
+        toolCalls: "before-last-2-messages"
+      }),
+      tools: createTripTools(this),
+      stopWhen: stepCountIs(MAX_STEPS),
+      abortSignal: options?.abortSignal
+    });
+
+    return result.toUIMessageStreamResponse({ onError: chatErrorMessage });
   }
 
   @callable()
@@ -153,7 +200,7 @@ export class TripAgent extends Agent<Env, TripAgentState> {
    */
   async applyOp(actor: OpContext["actor"], op: Op) {
     const before = this.requireTrip();
-    const ctx: OpContext = { actor, newId: () => crypto.randomUUID() };
+    const ctx: OpContext = { actor, newId: shortIdGenerator(before) };
     const { trip, summary } = op(before, ctx);
 
     const now = new Date().toISOString();
@@ -200,6 +247,36 @@ export class TripAgent extends Agent<Env, TripAgentState> {
     if (!this.state.trip) throw new Error("Trip not found");
     return this.state.trip;
   }
+}
+
+/**
+ * Short ids (6 hex chars) unique within the trip. The model reads and
+ * repeats ids, and short ones cost fewer tokens and get mistyped less.
+ */
+function shortIdGenerator(trip: Trip): () => string {
+  const taken = new Set<string>(trip.constraints.map((c) => c.id));
+  for (const day of trip.days) for (const item of day.items) taken.add(item.id);
+  return () => {
+    let id: string;
+    do {
+      id = crypto.randomUUID().replace(/-/g, "").slice(0, 6);
+    } while (taken.has(id));
+    taken.add(id);
+    return id;
+  };
+}
+
+function chatErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error("chat error", message);
+  if (/InvalidToolInput|Invalid input for tool/i.test(message)) {
+    // The model sees the full error and usually corrects itself
+    return "Trippy tried an invalid change and is retrying.";
+  }
+  if (/4006|daily free allocation|neurons/i.test(message)) {
+    return "Trippy has used up today's free AI allowance. Direct edits still work; chat will be back after the daily reset (00:00 UTC).";
+  }
+  return "Something went wrong while Trippy was thinking. Please try again.";
 }
 
 export function toSummary(trip: Trip): TripSummary {
