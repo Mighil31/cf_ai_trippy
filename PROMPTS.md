@@ -103,3 +103,28 @@ push, deploy and continue to phase 3
 ```
 yes
 ```
+
+---
+
+## 11 — 2026-10-29 — Walkthrough of Phase 4
+
+```
+Walk me through the phase 4 changes
+```
+
+---
+
+## 12 — 2026-10-29 — Concurrency and idempotency questions
+
+```
+If the user edits the trip while PlanTripWorkflow is running, how do we prevent the generated plan from overwriting newer changes?
+How is idempotency maintained? Are retries used?
+```
+
+---
+
+## 13 — 2026-10-29 — Accept Phase 4 as-is for MVP; commit, deploy, start Phase 5
+
+```
+The current implementation seems good enough for the MVP. commit, deploy and move to the next phase
+```
